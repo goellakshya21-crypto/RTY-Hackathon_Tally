@@ -1,9 +1,9 @@
 {
-  "team_name": "CHANGE_ME",
-  "project_title": "CHANGE_ME",
-  "one_liner": "CHANGE_ME: one sentence about what you're building",
-  "track": "CHANGE_ME: physical-world | ai-agents | area-of-expertise",
+  "team_name": "Tally MCP",
+  "project_title": "Tally MCP: readable TallyPrime data for AI agents",
+  "one_liner": "An MCP server that turns TallyPrime's raw, messy XML into clean ledgers, statements and reports an AI agent can read and explain.",
+  "track": "ai-agents",
   "members": [
-    { "name": "CHANGE_ME", "github": "CHANGE_ME" }
+    { "name": "Lakshya Goel", "github": "goellakshya21" }
   ]
 }
