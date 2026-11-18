@@ -2,7 +2,10 @@
 Run with TALLY_MOCK=1 to make the server use it instead of a live Tally."""
 import re
 
-HEAD = '<ENVELOPE><HEADER><VERSION>1</VERSION><STATUS>1</STATUS></HEADER><BODY><DESC></DESC><DATA><COLLECTION>'
+# Real TallyPrime puts this all-zero CMPINFO block in every reply, whether or not a company is open.
+CMPINFO = "<CMPINFO>" + "".join(f"<{t}>0</{t}>" for t in ("COMPANY", "GROUP", "LEDGER", "STOCKITEM", "VOUCHER")) + "</CMPINFO>"
+HEAD = ('<ENVELOPE><HEADER><VERSION>1</VERSION><STATUS>1</STATUS></HEADER><BODY><DESC>' + CMPINFO
+        + '</DESC><DATA><COLLECTION ISMSTDEPTYPE="Yes" MSTDEPTYPE="4">')
 TAIL = '</COLLECTION></DATA></BODY></ENVELOPE>'
 
 COMPANIES = '''<COMPANY NAME="Goel Stones Pvt Ltd" RESERVEDNAME=""><NAME TYPE="String">Goel Stones Pvt Ltd</NAME>
@@ -86,8 +89,61 @@ BELONGS = {"Sundry Debtors": ["Sundry Debtors"], "Sundry Creditors": ["Sundry Cr
            "Bank Accounts": ["Bank Accounts"], "Indirect Expenses": ["Indirect Expenses"]}
 
 
+def _tb(rows):
+    return "<ENVELOPE>" + "".join(
+        f"<DSPACCNAME><DSPDISPNAME>{n}</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>"
+        f"{f'{b:.2f}' if b < 0 else ''}</DSPCLDRAMTA></DSPCLDRAMT><DSPCLCRAMT><DSPCLCRAMTA>"
+        f"{f'{b:.2f}' if b > 0 else ''}</DSPCLCRAMTA></DSPCLCRAMT></DSPACCINFO>" for n, b in rows) + "</ENVELOPE>"
+
+
+def _stmt(name_tag, amt_tag, rows):
+    sub = amt_tag[:-3] + "SUBAMT"
+    wrap = (lambda n: f"<BSNAME><DSPACCNAME><DSPDISPNAME>{n}</DSPDISPNAME></DSPACCNAME></BSNAME>") \
+        if name_tag == "BSNAME" else (lambda n: f"<DSPACCNAME><DSPDISPNAME>{n}</DSPDISPNAME></DSPACCNAME>")
+    f = lambda v: "" if v is None else f"{v:.2f}"
+    return "<ENVELOPE>" + "".join(
+        f"{wrap(n)}<{amt_tag}><{sub}>{f(s)}</{sub}><BSMAINAMT>{f(m)}</BSMAINAMT></{amt_tag}>" for n, s, m in rows
+    ) + "</ENVELOPE>"
+
+
+# Built-in reports, consistent with the ledgers above (closing stock = stock summary value 1,66,520).
+TB_TOP = [("Capital Account", 518300), ("Current Liabilities", 157400), ("Fixed Assets", -135000),
+          ("Current Assets", -604400), ("Sales Accounts", 350000), ("Purchase Accounts", -240000),
+          ("Direct Expenses", -12000), ("Indirect Expenses", -34300)]
+TB_DETAIL = [("Capital Account", 518300), ("Capital Account - Lakshya", 518300),
+             ("Current Liabilities", 157400), ("Duties &amp; Taxes", 63000), ("Sundry Creditors", 94400),
+             ("Fixed Assets", -135000), ("Furniture", -135000),
+             ("Current Assets", -604400), ("Bank Accounts", -412500), ("Cash-in-Hand", -18200),
+             ("Sundry Debtors", -130500), ("Input IGST", -43200),
+             ("Sales Accounts", 350000), ("Sales - Marble", 350000),
+             ("Purchase Accounts", -240000), ("Purchase - Marble", -240000),
+             ("Direct Expenses", -12000), ("Freight Inward", -12000),
+             ("Indirect Expenses", -34300), ("Shop Rent", -30000), ("Electricity", -4300)]
+PL = [("Sales Accounts", None, 350000), ("Cost of Sales :", None, -85480), ("Opening Stock", None, None),
+      ("Add: Purchase Accounts", -240000, None), ("Less: Closing Stock", -166520, None),
+      ("Direct Expenses", -12000, None), ("Indirect Expenses", None, -34300)]
+BS = [("Capital Account", None, 518300), ("Loans (Liability)", None, None), ("Current Liabilities", None, 157400),
+      ("Profit &amp; Loss A/c", None, 230220), ("Fixed Assets", None, -135000), ("Current Assets", None, -770920)]
+
+
+def _report(xml):
+    rid = re.search(r"<TYPE>Data</TYPE><ID>([^<]+)</ID>", xml).group(1)
+    if rid == "Trial Balance":
+        return _tb(TB_DETAIL if "<EXPLODEFLAG>Yes" in xml else TB_TOP)
+    if rid == "Profit and Loss":
+        return _stmt("DSPACCNAME", "PLAMT", PL)
+    if rid == "Balance Sheet":
+        return _stmt("BSNAME", "BSAMT", BS)
+    return "<ENVELOPE></ENVELOPE>"
+
+
 def transport(xml: str) -> str:
-    typ = re.search(r"<TYPE>(\w+)</TYPE></HEADER>|<COLLECTION[^>]*><TYPE>(\w+)</TYPE>", xml)
+    # Real TallyPrime freezes (100% CPU, window Not Responding) when it gets SVFROMDATE and
+    # SVTODATE as plain YYYYMMDD. Fail loudly here so the offline test catches that regression.
+    if re.search(r"<SVFROMDATE>\s*\d{8}\s*</SVFROMDATE>", xml) and re.search(r"<SVTODATE>\s*\d{8}\s*</SVTODATE>", xml):
+        raise TimeoutError("fake Tally: plain YYYYMMDD from/to dates would freeze real TallyPrime")
+    if "<TYPE>Data</TYPE>" in xml:
+        return _report(xml)
     obj = re.search(r"<COLLECTION[^>]*><TYPE>(\w+)</TYPE>", xml)
     obj = obj.group(1) if obj else ""
     if obj == "Company":
