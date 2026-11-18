@@ -118,11 +118,27 @@ See [RULES.md](RULES.md) for the full list.
 
 ## Your project
 
-_Replace this section with your project README:_
-- **Team:**
-- **Track:**
-- **Problem:** who faces it and why it happens
-- **What we built:** the core workflow
-- **The hardest part:** how we solved it
-- **How to run it:**
-- **Demo / screenshots:**
+- **Team:** Tally MCP (Lakshya Goel, @goellakshya21)
+- **Track:** Build for AI Agents (`ai-agents`)
+
+**Problem.** Millions of Indian small businesses keep their books in TallyPrime. Tally has an API (XML over HTTP on `localhost:9000`), but what it returns is close to unreadable for people and for AI agents: deeply nested tags, dozens of empty and audit fields, control characters like `&#4;` that break normal XML parsers, undeclared `UDF:` tags, dates like `20261102`, and signed amounts where `-118000.00` silently means "₹1,18,000 Debit". When an agent is pointed at this raw output it misreads debits as credits, chokes on the XML, or runs out of context.
+
+**What we built.** [`tally-mcp/`](tally-mcp/) is an MCP server that sits between Claude and TallyPrime. The agent calls simple tools and gets back clean Markdown tables with Indian-format ₹ amounts and Dr/Cr labels:
+`list_companies`, `list_ledgers`, `ledger_statement` (with running balance), `day_book`, `trial_balance`, `profit_and_loss`, `balance_sheet`, `outstandings` (receivables/payables), `stock_summary`, and `raw_request` (cleans up the reply to any Tally XML request).
+
+**The hardest part.** Making Tally's output parse reliably and *mean* the right thing:
+- Stripping illegal control-character references and rewriting undeclared namespace prefixes before parsing.
+- Using TDL collections with server-side filters (date range, `$$IsBelongsTo` group membership, voucher type) so we fetch only what is needed.
+- Getting the sign convention right everywhere (negative = Dr) and building P&L/Balance Sheet from primary groups (`IsRevenue`, `AffectsGrossProfit`), with checks that both sides of the books match.
+- Clear errors when Tally is closed, the port is off, or no company is loaded (Tally answers with an empty `CMPINFO` instead of an error).
+
+**How to run it.** See [`tally-mcp/README.md`](tally-mcp/README.md). In short:
+```bash
+cd tally-mcp
+python -m venv .venv && .venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python test_offline.py          # every tool against a fake Tally
+claude mcp add tally -- .venv\Scripts\python.exe server.py
+```
+`seed_demo.py "Demo Stones"` loads sample ledgers and vouchers into a real (empty) Tally company.
+
+**Demo.** Ask Claude *"Show me the trial balance"* or *"What does Sharma Builders owe us?"*. Without the MCP the agent gets raw XML; with it, it gets a balanced trial balance and a ledger statement it can explain.
