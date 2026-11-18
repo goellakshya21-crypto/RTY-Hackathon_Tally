@@ -59,7 +59,7 @@ def _voucher_amount(v: ET.Element) -> float:
 
 # ---------------- tools ----------------
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_safe
 def list_companies() -> str:
     """Companies currently open in TallyPrime, with financial year start and books-from date."""
@@ -72,7 +72,7 @@ def list_companies() -> str:
         ["Company", "FY starts", "Books from", "State", "GSTIN"], rows)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_safe
 def list_ledgers(group: str = "", search: str = "", company: str = "", to_date: str = "",
                  hide_zero: bool = True) -> str:
@@ -102,7 +102,7 @@ def list_ledgers(group: str = "", search: str = "", company: str = "", to_date: 
                     [[g, n, drcr(o), drcr(c)] for g, n, o, c in rows], ["l", "l", "r", "r"]))
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_safe
 def ledger_statement(ledger: str, from_date: str = "", to_date: str = "", company: str = "") -> str:
     """Account statement for one ledger: every voucher touching it, with running balance.
@@ -155,7 +155,7 @@ def ledger_statement(ledger: str, from_date: str = "", to_date: str = "", compan
                         rows, ["l", "l", "l", "l", "r", "r", "r", "l"])
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_safe
 def day_book(from_date: str, to_date: str = "", voucher_type: str = "", company: str = "",
              show_entries: bool = False) -> str:
@@ -240,7 +240,7 @@ def _dr_cr_cells(net: float) -> list[str]:
     return [inr(-net) if net < -0.005 else "", inr(net) if net > 0.005 else ""]
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_safe
 def trial_balance(from_date: str = "", to_date: str = "", company: str = "", by_ledger: bool = False) -> str:
     """Trial balance exactly as TallyPrime computes it, with Debit and Credit columns per primary group.
@@ -273,7 +273,7 @@ def trial_balance(from_date: str = "", to_date: str = "", company: str = "", by_
             + table(["Particulars", "Debit", "Credit"], rows, ["l", "r", "r"]) + note)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_safe
 def profit_and_loss(from_date: str = "", to_date: str = "", company: str = "") -> str:
     """Profit & Loss exactly as TallyPrime computes it (incl. opening/closing stock), with gross and net profit."""
@@ -308,7 +308,7 @@ def profit_and_loss(from_date: str = "", to_date: str = "", company: str = "") -
             + "\n\n`+` adds to profit, `−` reduces it." + warn)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_safe
 def balance_sheet(to_date: str = "", company: str = "") -> str:
     """Balance sheet as on a date, exactly as TallyPrime computes it (incl. stock and Profit & Loss A/c)."""
@@ -340,7 +340,7 @@ def balance_sheet(to_date: str = "", company: str = "") -> str:
             f"\n\n### Assets\n\n{tbl(assets, at)}{note}")
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_safe
 def outstandings(kind: str = "receivable", to_date: str = "", company: str = "", top: int = 0) -> str:
     """Who owes you (receivable: Sundry Debtors) or whom you owe (payable: Sundry Creditors), largest first."""
@@ -363,7 +363,7 @@ def outstandings(kind: str = "receivable", to_date: str = "", company: str = "",
             + table(["Party", "Group", "Amount"], [[n, g, inr(a)] for n, g, a in shown], ["l", "l", "r"]))
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_safe
 def stock_summary(group: str = "", search: str = "", to_date: str = "", company: str = "") -> str:
     """Stock items with closing quantity, rate and value."""
@@ -427,7 +427,7 @@ def _tidy(el: ET.Element, depth=0, max_depth=8) -> list[str]:
     return lines
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @_safe
 def raw_request(xml: str) -> str:
     """Send any TallyPrime XML request and get the reply cleaned up (empty/audit tags removed,
