@@ -141,4 +141,10 @@ claude mcp add tally -- .venv\Scripts\python.exe server.py
 ```
 `seed_demo.py "Demo Stones"` loads sample ledgers and vouchers into a real (empty) Tally company. `diagnose.py` finds which kind of request freezes a TallyPrime install.
 
-**Demo.** Ask Claude *"Show me the trial balance"* or *"What does Sharma Builders owe us?"*. Without the MCP the agent gets raw XML; with it, it gets a balanced trial balance and a ledger statement it can explain.
+**Demo.** Ask Claude *"Show me the trial balance"* or *"What does Sharma Builders owe us?"*. Without the MCP the agent gets raw XML; with it, it gets a balanced trial balance and a ledger statement it can explain. [`demo.py`](tally-mcp/demo.py) runs the whole comparison live (raw Tally XML, then a real Claude agent using the tools) and can screen-record it.
+
+**What's next.** This version only *reads* Tally. The same API also accepts new entries (our [`seed_demo.py`](tally-mcp/seed_demo.py) already created vouchers in a live Tally), and Claude can read photos and PDFs. Put together, the agent can do the bookkeeping itself, with a person approving every entry:
+- **Snap a bill, get the entry:** photo of a purchase bill → Claude reads supplier, GSTIN, items and tax → the MCP matches ledgers, checks the GST split and catches duplicates → you approve → the voucher is in Tally.
+- **Bank statement → reconciled books**, **GSTR-2B vs purchase register** (input-credit check), **collections assistant** with reminders, **weekly books health check**, **voice entries in Hindi/Hinglish**, and **one agent across all of a CA's client companies**.
+
+Details, how each would work, and the safety rules for writing to Tally: [`tally-mcp/ROADMAP.md`](tally-mcp/ROADMAP.md).
