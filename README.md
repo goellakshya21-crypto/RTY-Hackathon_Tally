@@ -118,7 +118,7 @@ See [RULES.md](RULES.md) for the full list.
 
 ## Your project
 
-- **Team:** Tally MCP (Lakshya Goel, @goellakshya21)
+- **Team:** Tally MCP (Lakshya Goel, @goellakshya21-crypto)
 - **Track:** Build for AI Agents (`ai-agents`)
 
 **Problem.** Millions of Indian small businesses keep their books in TallyPrime. Tally has an API (XML over HTTP on `localhost:9000`), but what it returns is close to unreadable for people and for AI agents: deeply nested tags, dozens of empty and audit fields, control characters like `&#4;` that break normal XML parsers, undeclared `UDF:` tags, dates like `20261102`, and signed amounts where `-118000.00` silently means "₹1,18,000 Debit". When an agent is pointed at this raw output it misreads debits as credits, chokes on the XML, or runs out of context.

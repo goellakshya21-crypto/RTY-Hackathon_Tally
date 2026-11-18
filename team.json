@@ -4,6 +4,6 @@
   "one_liner": "An MCP server that turns TallyPrime's raw, messy XML into clean ledgers, statements and reports an AI agent can read and explain.",
   "track": "ai-agents",
   "members": [
-    { "name": "Lakshya Goel", "github": "goellakshya21" }
+    { "name": "Lakshya Goel", "github": "goellakshya21-crypto" }
   ]
 }
