@@ -126,11 +126,11 @@ See [RULES.md](RULES.md) for the full list.
 **What we built.** [`tally-mcp/`](tally-mcp/) is an MCP server that sits between Claude and TallyPrime. The agent calls simple tools and gets back clean Markdown tables with Indian-format ₹ amounts and Dr/Cr labels:
 `list_companies`, `list_ledgers`, `ledger_statement` (with running balance), `day_book`, `trial_balance`, `profit_and_loss`, `balance_sheet`, `outstandings` (receivables/payables), `stock_summary`, and `raw_request` (cleans up the reply to any Tally XML request).
 
-**The hardest part.** Making Tally's output parse reliably and *mean* the right thing:
-- Stripping illegal control-character references and rewriting undeclared namespace prefixes before parsing.
-- Using TDL collections with server-side filters (date range, `$$IsBelongsTo` group membership, voucher type) so we fetch only what is needed.
-- Getting the sign convention right everywhere (negative = Dr) and building P&L/Balance Sheet from primary groups (`IsRevenue`, `AffectsGrossProfit`), with checks that both sides of the books match.
-- Clear errors when Tally is closed, the port is off, or no company is loaded (Tally answers with an empty `CMPINFO` instead of an error).
+**The hardest part.** Talking to a live TallyPrime without breaking it, and making its numbers *mean* the right thing:
+- **A request format that freezes Tally.** Every trial balance request froze TallyPrime solid (window "Not Responding", 100% CPU, restart needed). We wrote [`diagnose.py`](tally-mcp/diagnose.py) to send tiny requests one at a time against the live integration sandbox, and pinned it to one detail: a report period sent as plain `YYYYMMDD` (`<SVFROMDATE>20250401</SVFROMDATE>` + `<SVTODATE>`) sends Tally into an endless loop, while the same period as a typed `1-Apr-2025` date answers in 0.02 s. The server now always sends the safe form, rewrites the unsafe form if an agent writes it in `raw_request`, sends one request at a time, and the fake Tally fails the tests if the unsafe form ever comes back.
+- **Stock makes group totals wrong.** Rebuilding the trial balance and P&L from group balances gave wrong figures for any company holding stock (₹41 L off on Current Assets in the sandbox company, and net profit ₹54.6 L instead of Tally's ₹13.5 L). Tally treats opening stock, closing stock and *negative* stock specially, so these three statements now come from Tally's own reports and match its screens to the paisa. The P&L and stock summary flag negative stock, a common data-entry problem.
+- **Parsing Tally's XML.** Stripping illegal control-character references (`&#4;`), rewriting undeclared `UDF:` prefixes, and ignoring the all-zero `CMPINFO` block Tally adds to every reply.
+- **Signs and errors.** Getting the sign convention right everywhere (negative = Dr), showing Tally's "Difference in opening balances" line instead of hiding it, and clear messages when Tally is closed, frozen, or has no company open.
 
 **How to run it.** See [`tally-mcp/README.md`](tally-mcp/README.md). In short:
 ```bash
@@ -139,6 +139,6 @@ python -m venv .venv && .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python test_offline.py          # every tool against a fake Tally
 claude mcp add tally -- .venv\Scripts\python.exe server.py
 ```
-`seed_demo.py "Demo Stones"` loads sample ledgers and vouchers into a real (empty) Tally company.
+`seed_demo.py "Demo Stones"` loads sample ledgers and vouchers into a real (empty) Tally company. `diagnose.py` finds which kind of request freezes a TallyPrime install.
 
 **Demo.** Ask Claude *"Show me the trial balance"* or *"What does Sharma Builders owe us?"*. Without the MCP the agent gets raw XML; with it, it gets a balanced trial balance and a ledger statement it can explain.
