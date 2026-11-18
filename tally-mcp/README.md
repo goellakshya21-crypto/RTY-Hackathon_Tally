@@ -81,10 +81,6 @@ python diagnose.py
 
 **What it found:** sending a report period as `<SVFROMDATE>20250401</SVFROMDATE><SVTODATE>20260331</SVTODATE>` (plain `YYYYMMDD`) puts TallyPrime into an endless loop. The same period as `<SVFROMDATE TYPE="Date">1-Apr-2025</SVFROMDATE>` answers in 0.02 s. The server always sends the safe form, and rewrites the unsafe form if an agent writes it in `raw_request`. Requests are also sent one at a time, never in parallel.
 
-## What's next
-
-Read-only today. Next: write tools with approval, starting with **photo of a bill → purchase voucher in Tally**. Then bank reconciliation, GSTR-2B matching, collections reminders, weekly health checks and voice entries. See [ROADMAP.md](ROADMAP.md).
-
 ## Notes / limits
 - Sign convention follows Tally: negative = Debit, positive = Credit. The output always says Dr or Cr.
 - Trial balance, P&L and balance sheet are Tally's own reports, not recalculated, because Tally's stock rules (opening stock in the trial balance, closing stock in P&L/balance sheet, negative stock) are easy to get wrong from group balances.
