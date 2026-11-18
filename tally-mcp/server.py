@@ -201,89 +201,143 @@ def day_book(from_date: str, to_date: str = "", voucher_type: str = "", company:
     return out
 
 
-def _groups(company, from_date, to_date):
-    gs = tc.collection("Group", ["Name", "Parent", "ClosingBalance", "IsRevenue", "AffectsGrossProfit",
-                                 "IsDeemedPositive"],
-                       company=company or None, from_date=from_date or None, to_date=to_date or None)
-    out = []
-    for g in gs:
-        parent = tc.text(g, "PARENT").strip()
-        out.append({"name": g.get("NAME", ""), "parent": parent,
-                    "primary": parent in ("", "Primary"),
-                    "bal": tc.to_number(tc.text(g, "CLOSINGBALANCE")),
-                    "revenue": tc.yes(tc.text(g, "ISREVENUE")),
-                    "gross": tc.yes(tc.text(g, "AFFECTSGROSSPROFIT"))})
-    return out
+# Trial balance, P&L and balance sheet come from Tally's own reports rather than being rebuilt from
+# group balances: Tally applies stock rules (opening stock in the trial balance, closing stock in the
+# P&L and balance sheet, negative stock) that a group-balance sum gets wrong.
+
+DIFF_LABEL = "_Difference in opening balances_"
+
+
+def _tb_rows(root) -> list[tuple[str, float]]:
+    """Trial Balance report -> [(name, net)], Tally sign (negative = Dr)."""
+    rows, name = [], None
+    for el in root:
+        if el.tag == "DSPACCNAME":
+            name = tc.text(el, "DSPDISPNAME")
+        elif el.tag == "DSPACCINFO" and name is not None:
+            dr = tc.to_number(el.findtext(".//DSPCLDRAMTA"))
+            cr = tc.to_number(el.findtext(".//DSPCLCRAMTA"))
+            rows.append((name, dr + cr))
+            name = None
+    return rows
+
+
+def _statement_rows(root, name_tag, amt_tag) -> list[tuple[str, float | None, float | None]]:
+    """P&L / Balance Sheet report -> [(name, sub_amount, main_amount)], None where Tally left it blank."""
+    rows, name = [], None
+    num = lambda s: tc.to_number(s) if s and s.strip() else None
+    for el in root:
+        if el.tag == name_tag:
+            name = el.findtext(".//DSPDISPNAME", "").strip()
+        elif el.tag == amt_tag and name is not None:
+            sub_tag = amt_tag[:-3] + "SUBAMT"  # PLAMT -> PLSUBAMT, BSAMT -> BSSUBAMT
+            rows.append((name, num(el.findtext(".//" + sub_tag)), num(el.findtext(".//BSMAINAMT"))))
+            name = None
+    return rows
+
+
+def _dr_cr_cells(net: float) -> list[str]:
+    return [inr(-net) if net < -0.005 else "", inr(net) if net > 0.005 else ""]
 
 
 @mcp.tool()
 @_safe
 def trial_balance(from_date: str = "", to_date: str = "", company: str = "", by_ledger: bool = False) -> str:
-    """Trial balance with Debit and Credit columns, by primary group (or by ledger)."""
+    """Trial balance exactly as TallyPrime computes it, with Debit and Credit columns per primary group.
+
+    by_ledger: also list the sub-groups and ledgers one level under each group.
+    """
+    co, f, t = company or None, from_date or None, to_date or None
+    top = _tb_rows(tc.report("Trial Balance", company=co, from_date=f, to_date=t))
+    top = [(n, b) for n, b in top if abs(b) >= 0.005]
+    rows = []
     if by_ledger:
-        items = [(l.get("NAME", ""), tc.text(l, "PARENT"), tc.to_number(tc.text(l, "CLOSINGBALANCE")))
-                 for l in tc.collection("Ledger", ["Name", "Parent", "ClosingBalance"],
-                                        company=company or None, from_date=from_date or None,
-                                        to_date=to_date or None)]
-        items = sorted((i for i in items if abs(i[2]) >= 0.005), key=lambda i: (i[1], i[0]))
-        rows = [[n, g, inr(-b) if b < 0 else "", inr(b) if b > 0 else ""] for n, g, b in items]
-        headers, align = ["Ledger", "Group", "Debit", "Credit"], ["l", "l", "r", "r"]
-        bals = [i[2] for i in items]
+        primary = {n for n, _ in top}
+        for n, b in _tb_rows(tc.report("Trial Balance", company=co, from_date=f, to_date=t, explode=True)):
+            if abs(b) < 0.005:
+                continue
+            rows.append([f"**{n}**" if n in primary else f"&nbsp;&nbsp;&nbsp;↳ {n}"] + _dr_cr_cells(b))
     else:
-        prim = [g for g in _groups(company, from_date, to_date) if g["primary"] and abs(g["bal"]) >= 0.005]
-        rows = [[g["name"], inr(-g["bal"]) if g["bal"] < 0 else "", inr(g["bal"]) if g["bal"] > 0 else ""]
-                for g in prim]
-        headers, align = ["Group", "Debit", "Credit"], ["l", "r", "r"]
-        bals = [g["bal"] for g in prim]
-    dr = sum(-b for b in bals if b < 0)
-    cr = sum(b for b in bals if b > 0)
-    rows.append(["**Total**"] + ([""] if by_ledger else []) + [f"**{inr(dr)}**", f"**{inr(cr)}**"])
-    note = "" if abs(dr - cr) < 1 else f"\n\n⚠️ Difference of {inr(abs(dr - cr))} (often the opening-balance difference in Tally)."
-    return (f"## Trial Balance · {period(from_date or None, to_date or None)}\n\n"
-            + table(headers, rows, align) + note)
+        rows = [[n] + _dr_cr_cells(b) for n, b in top]
+    dr = sum(-b for _, b in top if b < 0)
+    cr = sum(b for _, b in top if b > 0)
+    note = ""
+    if abs(dr - cr) >= 0.5:
+        diff = abs(dr - cr)
+        rows.append([DIFF_LABEL] + ([inr(diff), ""] if dr < cr else ["", inr(diff)]))
+        note = (f"\n\nThe books don't balance by **{inr(diff)}**. Tally shows this line too; it means "
+                "opening balances entered in Tally don't add up (Dr ≠ Cr).")
+        dr = cr = max(dr, cr)
+    rows.append(["**Total**", f"**{inr(dr)}**", f"**{inr(cr)}**"])
+    return (f"## Trial Balance · {period(f, t)}\n\n"
+            + table(["Particulars", "Debit", "Credit"], rows, ["l", "r", "r"]) + note)
 
 
 @mcp.tool()
 @_safe
 def profit_and_loss(from_date: str = "", to_date: str = "", company: str = "") -> str:
-    """Profit & Loss summary: trading items, gross profit, indirect items, net profit."""
-    rev = [g for g in _groups(company, from_date, to_date) if g["primary"] and g["revenue"]]
-    def side(gs, credit):
-        return [(g["name"], abs(g["bal"])) for g in gs if (g["bal"] > 0) == credit and abs(g["bal"]) >= 0.005]
-    trading, indirect = [g for g in rev if g["gross"]], [g for g in rev if not g["gross"]]
-    gp = sum(g["bal"] for g in trading)
-    np_ = sum(g["bal"] for g in rev)
-
-    def block(title, gs):
-        parts = [f"### {title}"]
-        for label, items in (("Income", side(gs, True)), ("Expense", side(gs, False))):
-            if items:
-                parts.append(table([label, "Amount"], [[n, inr(a)] for n, a in items], ["l", "r"]))
-        return "\n\n".join(parts if len(parts) > 1 else parts + ["_No entries._"])
-
+    """Profit & Loss exactly as TallyPrime computes it (incl. opening/closing stock), with gross and net profit."""
+    f, t = from_date or None, to_date or None
+    rows = _statement_rows(tc.report("Profit and Loss", company=company or None, from_date=f, to_date=t),
+                           "DSPACCNAME", "PLAMT")
+    out, net, gross, main_sign, warn = [], 0.0, None, 1, ""
+    for name, sub, main in rows:
+        if sub is not None and "closing stock" in name.lower() and sub * main_sign < 0:
+            warn = (f"\n\n⚠️ Closing stock is **negative ({inr(sub * main_sign)})**: Tally has more goods going "
+                    "out than coming in. Usually sales were entered without the matching purchases or opening "
+                    "stock, which inflates cost of sales and understates profit.")
+        if main is not None:
+            if gross is None and name.lower().startswith("indirect"):
+                gross = net
+                out.append(["**Gross profit**" if gross >= 0 else "**Gross loss**", "", f"**{inr(abs(gross))}**"])
+            net += main
+            main_sign = 1 if main >= 0 else -1
+            out.append([f"**{name}**", "", ("+" if main >= 0 else "−") + inr(abs(main))])
+        elif sub is not None:
+            # Tally signs sub-lines as balances (negative = Dr); show them the way its screen does.
+            out.append([f"&nbsp;&nbsp;&nbsp;{name}", inr(sub * main_sign), ""])
+    if not out:
+        return "## Profit & Loss\n\n_No income or expenses in this period._"
+    if gross is None:
+        gross = net
+    out.append(["**Net profit**" if net >= 0 else "**Net loss**", "", f"**{inr(abs(net))}**"])
     lab = lambda x: f"{'Profit' if x >= 0 else 'Loss'} {inr(abs(x))}"
-    return (f"## Profit & Loss · {period(from_date or None, to_date or None)}\n\n"
-            f"| Gross | Net |\n|---:|---:|\n| **{lab(gp)}** | **{lab(np_)}** |\n\n"
-            + block("Trading (direct)", trading) + "\n\n" + block("Indirect", indirect))
+    return (f"## Profit & Loss · {period(f, t)}\n\n"
+            f"| Gross | Net |\n|---:|---:|\n| **{lab(gross)}** | **{lab(net)}** |\n\n"
+            + table(["Particulars", "Details", "Amount"], out, ["l", "r", "r"])
+            + "\n\n`+` adds to profit, `−` reduces it." + warn)
 
 
 @mcp.tool()
 @_safe
 def balance_sheet(to_date: str = "", company: str = "") -> str:
-    """Balance sheet as on a date: liabilities and assets by primary group, with profit/loss carried."""
-    gs = _groups(company, None, to_date)
-    bs = [g for g in gs if g["primary"] and not g["revenue"] and abs(g["bal"]) >= 0.005]
-    pl = sum(g["bal"] for g in gs if g["primary"] and g["revenue"])
-    liab = [(g["name"], g["bal"]) for g in bs if g["bal"] > 0]
-    assets = [(g["name"], -g["bal"]) for g in bs if g["bal"] < 0]
-    if abs(pl) >= 0.005:
-        (liab if pl > 0 else assets).append(("Profit & Loss A/c" + (" (loss)" if pl < 0 else ""), abs(pl)))
-    lt, at = sum(a for _, a in liab), sum(a for _, a in assets)
-    return (f"## Balance Sheet · {period(None, to_date or None)}\n\n### Liabilities\n\n"
-            + table(["Group", "Amount"], [[n, inr(a)] for n, a in liab] + [["**Total**", f"**{inr(lt)}**"]], ["l", "r"])
-            + "\n\n### Assets\n\n"
-            + table(["Group", "Amount"], [[n, inr(a)] for n, a in assets] + [["**Total**", f"**{inr(at)}**"]], ["l", "r"])
-            + ("" if abs(lt - at) < 1 else f"\n\n⚠️ Sides differ by {inr(abs(lt - at))} (check opening balances in Tally)."))
+    """Balance sheet as on a date, exactly as TallyPrime computes it (incl. stock and Profit & Loss A/c)."""
+    t = to_date or None
+    rows = _statement_rows(tc.report("Balance Sheet", company=company or None, to_date=t), "BSNAME", "BSAMT")
+    liab, assets, side = [], [], None
+    for name, sub, main in rows:
+        if main is not None and abs(main) >= 0.005:
+            side = liab if main > 0 else assets  # Tally sign: positive = Cr (liability side)
+            side.append([name, abs(main)])
+        elif sub is not None and side is not None:
+            side.append([f"&nbsp;&nbsp;&nbsp;{name}", sub if side is liab else -sub, True])
+    lt = sum(r[1] for r in liab if len(r) == 2)
+    at = sum(r[1] for r in assets if len(r) == 2)
+    note = ""
+    if abs(lt - at) >= 0.5:
+        diff = abs(lt - at)
+        (liab if lt < at else assets).append([DIFF_LABEL, diff])
+        note = (f"\n\nThe two sides differ by **{inr(diff)}**: the opening balances entered in Tally don't add up. "
+                "Tally's own Balance Sheet shows the same difference.")
+        lt = at = max(lt, at)
+
+    def tbl(items, total):
+        body = [[n, "", inr(a)] if len(r) == 2 else [n, inr(a), ""] for r in items for n, a in [r[:2]]]
+        return table(["Particulars", "Details", "Amount"], body + [["**Total**", "", f"**{inr(total)}**"]],
+                     ["l", "r", "r"])
+
+    return (f"## Balance Sheet · {period(None, t)}\n\n### Liabilities\n\n{tbl(liab, lt)}"
+            f"\n\n### Assets\n\n{tbl(assets, at)}{note}")
 
 
 @mcp.tool()
@@ -317,21 +371,31 @@ def stock_summary(group: str = "", search: str = "", to_date: str = "", company:
     items = tc.collection("StockItem", ["Name", "Parent", "BaseUnits", "ClosingBalance", "ClosingRate",
                                        "ClosingValue"], company=company or None, to_date=to_date or None,
                           filters=filters)
-    rows, total = [], 0.0
+    rows, total, negative = [], 0.0, []
     for s in items:
         name = s.get("NAME", "")
         if search and search.lower() not in name.lower():
             continue
         q_raw = tc.text(s, "CLOSINGBALANCE")
         q = tc.to_number(q_raw)
+        if not q_raw and not tc.text(s, "CLOSINGVALUE"):
+            continue  # item with no stock movement at all
         unit = tc.unit_of(q_raw) or tc.text(s, "BASEUNITS")
-        val = abs(tc.to_number(tc.text(s, "CLOSINGVALUE")))
+        # Tally sign: stock held is a debit (negative); a positive value means negative stock.
+        val = -tc.to_number(tc.text(s, "CLOSINGVALUE"))
         total += val
-        rows.append([tc.text(s, "PARENT"), name, qty(q, unit), inr(abs(tc.to_number(tc.text(s, "CLOSINGRATE")))),
-                     inr(val)])
+        if q < 0 or val < -0.005:
+            negative.append(name)
+        rows.append([tc.text(s, "PARENT"), name + (" ⚠️" if q < 0 or val < -0.005 else ""), qty(q, unit),
+                     inr(abs(tc.to_number(tc.text(s, "CLOSINGRATE")))), inr(val)])
     rows.sort(key=lambda r: (r[0].lower(), r[1].lower()))
+    warn = ""
+    if negative:
+        warn = (f"\n\n⚠️ **{len(negative)} item{'s' if len(negative) != 1 else ''} below zero stock**: more was sold "
+                "or issued than Tally has received. Usually purchases or opening stock haven't been entered. "
+                "These make the total stock value lower than it really is.")
     return (f"## Stock summary · {period(None, to_date or None)}\n\n**{len(rows)} items · value {inr(total)}**\n\n"
-            + table(["Group", "Item", "Quantity", "Rate", "Value"], rows, ["l", "l", "r", "r", "r"]))
+            + table(["Group", "Item", "Quantity", "Rate", "Value"], rows, ["l", "l", "r", "r", "r"]) + warn)
 
 
 def _tidy(el: ET.Element, depth=0, max_depth=8) -> list[str]:
