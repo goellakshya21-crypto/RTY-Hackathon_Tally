@@ -31,7 +31,9 @@ WINDOW_TITLE = "Tally MCP demo"
 TALLY_URL = os.environ.get("TALLY_URL", "http://localhost:9000")
 REPO_URL = "github.com/goellakshya21-crypto/RTY-Hackathon_Tally"
 AGENT_RULES = ("You are answering a business owner's question about their TallyPrime books using the tally "
-               "tools. Be brief: at most one table and three short bullet points. Use Indian ₹ formatting.")
+               "tools. The owner sees each tool's output on screen, so don't repeat its tables. Reply with at "
+               "most 4 bullet points, each one line of under 25 words, most important first, with Indian ₹ "
+               "formatting. No headings, no numbered lists, no intro or closing summary.")
 
 console = Console(highlight=False)
 
@@ -52,14 +54,32 @@ def big_window(font_px: int) -> None:
         _fields_ = [("cbSize", ctypes.c_ulong), ("nFont", ctypes.c_ulong), ("dwFontSize", COORD),
                     ("FontFamily", ctypes.c_uint), ("FontWeight", ctypes.c_uint), ("FaceName", ctypes.c_wchar * 32)]
 
+    class SMALL_RECT(ctypes.Structure):
+        _fields_ = [("L", ctypes.c_short), ("T", ctypes.c_short), ("R", ctypes.c_short), ("B", ctypes.c_short)]
+
+    class CSBI(ctypes.Structure):
+        _fields_ = [("dwSize", COORD), ("cursor", COORD), ("attr", ctypes.c_ushort), ("win", SMALL_RECT),
+                    ("maxWin", COORD)]
+
+    out = k32.GetStdHandle(-11)
     f = FONT()
     f.cbSize = ctypes.sizeof(FONT)
     f.dwFontSize = COORD(0, font_px)
     f.FontFamily, f.FontWeight, f.FaceName = 54, 400, "Consolas"
-    k32.SetCurrentConsoleFontEx(k32.GetStdHandle(-11), False, ctypes.byref(f))
+    k32.SetCurrentConsoleFontEx(out, False, ctypes.byref(f))
     hwnd = k32.GetConsoleWindow()
     u32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+    time.sleep(0.5)
+    # A bigger font shrinks how many columns fit, but the console keeps reporting its old width,
+    # so text would run off the right edge. Make the buffer exactly as wide as what fits on screen.
+    info = CSBI()
+    k32.GetConsoleScreenBufferInfo(out, ctypes.byref(info))
+    cols, rows = info.maxWin.X, info.maxWin.Y
+    k32.SetConsoleWindowInfo(out, True, ctypes.byref(SMALL_RECT(0, 0, cols - 1, rows - 1)))
+    k32.SetConsoleScreenBufferSize(out, COORD(cols, 9000))
+    u32.ShowWindow(hwnd, 3)
     u32.SetForegroundWindow(hwnd)
+    console.width, console.height = cols - 1, rows  # tell Rich the real size
     time.sleep(1.5)
 
 
@@ -94,8 +114,33 @@ def type_out(text: str, style: str = "", delay: float = 0.025) -> None:
     console.print()
 
 
+def clear() -> None:
+    # Rich's ANSI clear leaves old lines visible in a Windows console window; cls wipes it properly.
+    if os.name == "nt" and sys.stdout.isatty():
+        os.system("cls")
+    else:
+        console.clear()
+
+
+def preview(md: str, max_lines: int = 20, max_rows: int = 9) -> str:
+    """First few blocks of a tool's Markdown, never cutting a table in half."""
+    blocks, out, used = [b for b in md.strip().split("\n\n") if b.strip()], [], 0
+    for i, b in enumerate(blocks):
+        lines = b.splitlines()
+        hidden = len(lines) - 2 - max_rows  # table rows beyond max_rows (2 = header + separator)
+        if lines[0].startswith("|") and hidden > 3:  # only shorten when it saves real space
+            lines = lines[:max_rows + 2]
+            lines.append(f"| … {hidden} more rows |" + " |" * (lines[0].count("|") - 2))
+        if i >= 2 and used + len(lines) > max_lines:
+            out.append(f"*… {len(blocks) - i} more section{'s' if len(blocks) - i > 1 else ''}*")
+            break
+        out.append("\n".join(lines))
+        used += len(lines)
+    return "\n\n".join(out)
+
+
 def scene(title: str) -> None:
-    console.clear()
+    clear()
     console.print(Rule(Text(title, style="bold cyan"), style="cyan"))
     console.print()
 
@@ -114,7 +159,7 @@ def centre_vertically(panel_rows: int) -> None:
 
 
 def title_card() -> None:
-    console.clear()
+    clear()
     centre_vertically(9)
     console.print(Panel(Group(
         Text("Tally MCP", style="bold white", justify="center"),
@@ -170,7 +215,7 @@ def ask_claude(question: str, model: str, cfg_path: str, workdir: str) -> None:
         cmd += ["--model", model]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             encoding="utf-8", errors="replace", cwd=workdir)
-    pending_text, final = [], None
+    pending_text, final, shown_calls = [], None, set()
     with console.status("[magenta]Claude is working…[/]", spinner="dots"):
         for line in proc.stdout:
             try:
@@ -183,6 +228,9 @@ def ask_claude(question: str, model: str, cfg_path: str, workdir: str) -> None:
                     if c.get("type") == "text" and c.get("text", "").strip():
                         pending_text.append(c["text"].strip())
                     elif c.get("type") == "tool_use":
+                        if not c.get("name", "").startswith("mcp__tally__"):
+                            continue  # Claude Code's own housekeeping (e.g. loading tool schemas)
+                        shown_calls.add(c.get("id"))
                         for t in pending_text:
                             console.print(Text("Claude: " + t, style="italic dim"))
                         pending_text = []
@@ -191,18 +239,19 @@ def ask_claude(question: str, model: str, cfg_path: str, workdir: str) -> None:
                         console.print(Text.assemble(("🔧 Claude calls ", "bold yellow"),
                                                     (f"tally.{name}", "bold white on dark_orange3"),
                                                     (f"({args})", "yellow")))
+                        pause(0.8)
             elif kind == "user":
                 for c in ev["message"].get("content", []):
                     if isinstance(c, dict) and c.get("type") == "tool_result":
+                        if c.get("tool_use_id") not in shown_calls:
+                            continue
                         body = c.get("content")
                         if isinstance(body, list):
                             body = "\n".join(x.get("text", "") for x in body if isinstance(x, dict))
                         body = str(body or "")
-                        shown = body.splitlines()
-                        more = len(shown) - 12
-                        md = "\n".join(shown[:12]) + (f"\n\n*… {more} more lines*" if more > 0 else "")
-                        console.print(Panel(Markdown(md), title="tally MCP returned (clean Markdown)",
+                        console.print(Panel(Markdown(preview(body)), title="tally MCP returned (clean Markdown)",
                                             title_align="left", border_style="red" if c.get("is_error") else "green"))
+                        pause(2.5)  # let viewers read it; Claude keeps working meanwhile
             elif kind == "result":
                 final = ev.get("result")
                 if ev.get("is_error"):
@@ -234,7 +283,7 @@ def with_mcp(company: str, fy: int, model: str) -> None:
 
 
 def outro() -> None:
-    console.clear()
+    clear()
     centre_vertically(13)
     console.print(Panel(Group(
         Text("Tally MCP", style="bold white", justify="center"),
